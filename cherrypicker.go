@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -8,10 +9,12 @@ import (
 	"net/url"
 	"os"
 	"strings"
+
+	openai "github.com/sashabaranov/go-openai"
 )
 
 var apiAuthDomain = "https://www.reddit.com/api/v1/access_token?scope=*"
-var apiDomain = "https://oauth.reddit.com/"
+var apiDomain = "https://oauth.reddit.com"
 
 type AuthTokenData struct {
 	AccessToken string `json:"access_token"`
@@ -69,10 +72,13 @@ func main() {
 
 	if programMode == "analyze" {
 		bearerToken := os.Args[2]
-		redditUsername := os.Args[3]
+		openAiToken := os.Args[3]
+		redditUsername := os.Args[4]
 
-		if redditUsername != "" && bearerToken != "" {
-			getUserComments(client, redditUsername, bearerToken)
+		if redditUsername != "" && bearerToken != "" && openAiToken != "" {
+
+			openAIClient := openai.NewClient(openAiToken)
+			getUserComments(client, redditUsername, bearerToken, *openAIClient)
 			return
 		}
 		printUsageMessage()
@@ -107,7 +113,15 @@ func getBearerToken(c http.Client, cid string, cs string) string {
 	return string(body)
 }
 
-func getUserComments(c http.Client, un string, bt string) string {
+func getUserComments(c http.Client, un string, bt string, oaic openai.Client) string {
+
+	/*resp,err := oaic.RetrieveAssistant(context.Background(), "asst_hoFUtfCL5jDnFhtYNE7gxQYF")
+	if err != nil {
+		fmt.Printf("Error getting assistant: %v\n",err)
+		return "ur not my dad";
+	}
+	oaic.CreateAssistant(context.Background(), openai.AssistantRequest{})
+	*/
 
 	ce := apiDomain + "/user/" + un + "/comments"
 
@@ -126,17 +140,28 @@ func getUserComments(c http.Client, un string, bt string) string {
 	}
 
 	body, err := io.ReadAll(res.Body)
+	if err != nil {
+		fmt.Println("Error reading all of response body")
+		return "your not my dad"
+	}
 
 	bodyString := string(body)
+	fmt.Println(bodyString)
 
 	var commentResponseData CommentResponseData
 	json.Unmarshal([]byte(bodyString), &commentResponseData)
 
-	commentCounter := 0
+	var commentsSlice []string
 
+	commentCounter := 0
+	currComment := ""
+	fmt.Println("right before the fors")
 	for _, commentObject := range commentResponseData.Data.Children {
 		commentCounter += 1
-		fmt.Printf("comment #%d (r/%s): %s\n\n", commentCounter, commentObject.Data.Subreddit, commentObject.Data.Body)
+		currComment = fmt.Sprintf("'%s' on r/%s", commentObject.Data.Body, commentObject.Data.Subreddit)
+		fmt.Printf("comment #%d (in r/%s): %s\n\n", commentCounter, commentObject.Data.Subreddit, commentObject.Data.Body)
+
+		commentsSlice = append(commentsSlice, currComment)
 	}
 
 	afterId := commentResponseData.Data.After
@@ -170,6 +195,109 @@ func getUserComments(c http.Client, un string, bt string) string {
 			fmt.Printf("comment #%d (r/%s): %s\n\n", commentCounter, commentObject.Data.Subreddit, commentObject.Data.Body)
 		}
 
+		//OPENAI STUFF ////////////////////
+
+		assistantName := "Reddit Comment Analyzer"
+		assistantInstructions := "You are an Investigator. I will give you a list of reddit comments along with what subreddit they were made in and you will tell me any peronal information u can find, including name, location, hobbies, etc"
+		assistant, err := oaic.CreateAssistant(
+			context.Background(),
+			openai.AssistantRequest{
+				Model:        openai.GPT4,
+				Name:         &assistantName,
+				Instructions: &assistantInstructions,
+			},
+		)
+		if err != nil {
+			fmt.Printf("There has been an error creating assistant: %v\n", err)
+		}
+
+		analyzeThread, err := oaic.CreateThread(context.Background(), openai.ThreadRequest{})
+		if err != nil {
+			fmt.Printf("error making new thread: %v\n", err)
+			return "ur not my dad"
+		}
+
+		openAIMessage, err := oaic.CreateMessage(
+			context.Background(),
+			analyzeThread.ID,
+			openai.MessageRequest{
+				Role:    "user",
+				Content: strings.Join(commentsSlice, ","),
+			},
+		)
+		if err != nil {
+			fmt.Printf("There wasn an error creating message: %v", err)
+			return "ur not my dad"
+		}
+		fmt.Println("Message", openAIMessage)
+
+		modelName := "gpt-4"
+
+		runresp, err := oaic.CreateRun(
+			context.Background(),
+			analyzeThread.ID,
+			openai.RunRequest{
+				AssistantID: assistant.ID,
+				Model:       &modelName,
+			},
+		)
+
+		if err != nil {
+			fmt.Printf("There has been an error running: %v", err)
+		}
+
+		runresp, err = oaic.RetrieveRun(
+			context.Background(),
+			analyzeThread.ID,
+			runresp.ID,
+		)
+		if err != nil {
+			fmt.Printf("There has been an error retrieving run status: %v\n", err)
+		}
+
+		threadStatus := runresp.Status
+
+		for threadStatus == "in_progress" {
+			runresp, err = oaic.RetrieveRun(
+				context.Background(),
+				analyzeThread.ID,
+				runresp.ID,
+			)
+			if err != nil {
+				fmt.Printf("There has been an error retrieving run status: %v\n", err)
+			}
+			threadStatus = runresp.Status
+			fmt.Println("run status (in loop):", runresp.Status)
+		}
+
+		fmt.Println("run status:", runresp.Status)
+		fmt.Println(runresp)
+
+		/*
+			var messageLim = 4
+			beforeString := ""
+			afterString := ""
+			orderString := ""
+		*/
+
+		messages, err := oaic.ListMessage(
+			context.Background(),
+			analyzeThread.ID,
+			nil,
+			nil,
+			nil,
+			nil,
+		)
+
+		fmt.Println("Messages?: ", messages.Messages)
+		fmt.Println("Message len?: ", len(messages.Messages))
+		fmt.Println("message[0]", messages.Messages[0])
+		fmt.Println("message[0] content: ", messages.Messages[0].Content)
+		fmt.Println(messages.Messages[0].Content[0].Text.Value)
+		fmt.Println(messages)
+
+		//fmt.Println(commentsSlice)
+
 	}
 
 	return "ur not my dad"
@@ -177,5 +305,5 @@ func getUserComments(c http.Client, un string, bt string) string {
 }
 
 func printUsageMessage() {
-	fmt.Printf("Usage: go run cherrypicker token [clientID] [clientSecret] \nOR\ngo run cherrypicker analyze [bearerToken] [redditUsername]")
+	fmt.Printf("Usage: go run cherrypicker token [clientID] [clientSecret] \nOR\ngo run cherrypicker analyze [bearerToken] [openaitoken] [redditUsername]")
 }
