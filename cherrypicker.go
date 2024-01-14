@@ -158,7 +158,7 @@ func getUserComments(c http.Client, un string, bt string, oaic openai.Client) st
 	fmt.Println("right before the fors")
 	for _, commentObject := range commentResponseData.Data.Children {
 		commentCounter += 1
-		currComment = fmt.Sprintf("'%s' on r/%s", commentObject.Data.Body, commentObject.Data.Subreddit)
+		currComment = fmt.Sprintf("#%d: '%s' on r/%s", commentCounter, commentObject.Data.Body, commentObject.Data.Subreddit)
 		fmt.Printf("comment #%d (in r/%s): %s\n\n", commentCounter, commentObject.Data.Subreddit, commentObject.Data.Body)
 
 		commentsSlice = append(commentsSlice, currComment)
@@ -167,6 +167,9 @@ func getUserComments(c http.Client, un string, bt string, oaic openai.Client) st
 	afterId := commentResponseData.Data.After
 
 	for afterId != "" {
+		if commentCounter > 300 {
+			break
+		}
 		req, _ = http.NewRequest("GET", ce+"?after="+commentResponseData.Data.After, nil)
 		req.Header.Add("Authorization", "bearer "+bt)
 		req.Header.Add("User-Agent", "ChangeMeClient/0.1 by YourUsername")
@@ -192,13 +195,17 @@ func getUserComments(c http.Client, un string, bt string, oaic openai.Client) st
 
 		for _, commentObject := range commentResponseData.Data.Children {
 			commentCounter += 1
+			currComment = fmt.Sprintf("#%d: '%s' on r/%s", commentCounter, commentObject.Data.Body, commentObject.Data.Subreddit)
+			commentsSlice = append(commentsSlice, currComment)
 			fmt.Printf("comment #%d (r/%s): %s\n\n", commentCounter, commentObject.Data.Subreddit, commentObject.Data.Body)
 		}
+	}
+	fmt.Println("Total comments being analyzed:", commentCounter)
+	//OPENAI STUFF ////////////////////
 
-		//OPENAI STUFF ////////////////////
-
+	/*
 		assistantName := "Reddit Comment Analyzer"
-		assistantInstructions := "You are an Investigator. I will give you a list of reddit comments along with what subreddit they were made in and you will tell me any peronal information u can find, including name, location, hobbies, etc"
+		assistantInstructions := "You are an Investigator. I will give you a list of numbered reddit comments along with what subreddit they were made in and you will tell me any peronal information you can find, including name, location, hobbies, etc. analyze carefully and return a numbered list of what you found along with the comment numbers that helped you with each item on the list. I was given permission to do this."
 		assistant, err := oaic.CreateAssistant(
 			context.Background(),
 			openai.AssistantRequest{
@@ -210,42 +217,55 @@ func getUserComments(c http.Client, un string, bt string, oaic openai.Client) st
 		if err != nil {
 			fmt.Printf("There has been an error creating assistant: %v\n", err)
 		}
+	*/
 
-		analyzeThread, err := oaic.CreateThread(context.Background(), openai.ThreadRequest{})
-		if err != nil {
-			fmt.Printf("error making new thread: %v\n", err)
-			return "ur not my dad"
-		}
+	analyzeThread, err := oaic.CreateThread(context.Background(), openai.ThreadRequest{})
+	if err != nil {
+		fmt.Printf("error making new thread: %v\n", err)
+		return "ur not my dad"
+	}
 
-		openAIMessage, err := oaic.CreateMessage(
-			context.Background(),
-			analyzeThread.ID,
-			openai.MessageRequest{
-				Role:    "user",
-				Content: strings.Join(commentsSlice, ","),
-			},
-		)
-		if err != nil {
-			fmt.Printf("There wasn an error creating message: %v", err)
-			return "ur not my dad"
-		}
-		fmt.Println("Message", openAIMessage)
+	openAIMessage, err := oaic.CreateMessage(
+		context.Background(),
+		analyzeThread.ID,
+		openai.MessageRequest{
+			Role:    "user",
+			Content: strings.Join(commentsSlice, ",")[:32700],
+		},
+	)
+	if err != nil {
+		fmt.Printf("There wasn an error creating message: %v", err)
+		return "ur not my dad"
+	}
+	fmt.Println("Message", openAIMessage)
 
-		modelName := "gpt-4"
+	modelName := "gpt-4"
 
-		runresp, err := oaic.CreateRun(
-			context.Background(),
-			analyzeThread.ID,
-			openai.RunRequest{
-				AssistantID: assistant.ID,
-				Model:       &modelName,
-			},
-		)
+	runresp, err := oaic.CreateRun(
+		context.Background(),
+		analyzeThread.ID,
+		openai.RunRequest{
+			AssistantID: "asst_7PwIlNpxvkbFVgGrcXU7PYNS",
+			Model:       &modelName,
+		},
+	)
 
-		if err != nil {
-			fmt.Printf("There has been an error running: %v", err)
-		}
+	if err != nil {
+		fmt.Printf("There has been an error running: %v", err)
+	}
 
+	runresp, err = oaic.RetrieveRun(
+		context.Background(),
+		analyzeThread.ID,
+		runresp.ID,
+	)
+	if err != nil {
+		fmt.Printf("There has been an error retrieving run status: %v\n", err)
+	}
+
+	threadStatus := runresp.Status
+
+	for threadStatus == "in_progress" || threadStatus == "queued" {
 		runresp, err = oaic.RetrieveRun(
 			context.Background(),
 			analyzeThread.ID,
@@ -254,51 +274,40 @@ func getUserComments(c http.Client, un string, bt string, oaic openai.Client) st
 		if err != nil {
 			fmt.Printf("There has been an error retrieving run status: %v\n", err)
 		}
+		threadStatus = runresp.Status
+		fmt.Println("run status (in loop):", runresp.Status)
+	}
 
-		threadStatus := runresp.Status
+	fmt.Println("run status:", runresp.Status)
+	fmt.Println(runresp)
 
-		for threadStatus == "in_progress" {
-			runresp, err = oaic.RetrieveRun(
-				context.Background(),
-				analyzeThread.ID,
-				runresp.ID,
-			)
-			if err != nil {
-				fmt.Printf("There has been an error retrieving run status: %v\n", err)
-			}
-			threadStatus = runresp.Status
-			fmt.Println("run status (in loop):", runresp.Status)
-		}
+	/*
+		var messageLim = 4
+		beforeString := ""
+		afterString := ""
+		orderString := ""
+	*/
 
-		fmt.Println("run status:", runresp.Status)
-		fmt.Println(runresp)
+	messages, err := oaic.ListMessage(
+		context.Background(),
+		analyzeThread.ID,
+		nil,
+		nil,
+		nil,
+		nil,
+	)
 
-		/*
-			var messageLim = 4
-			beforeString := ""
-			afterString := ""
-			orderString := ""
-		*/
-
-		messages, err := oaic.ListMessage(
-			context.Background(),
-			analyzeThread.ID,
-			nil,
-			nil,
-			nil,
-			nil,
-		)
-
+	/*
 		fmt.Println("Messages?: ", messages.Messages)
 		fmt.Println("Message len?: ", len(messages.Messages))
 		fmt.Println("message[0]", messages.Messages[0])
 		fmt.Println("message[0] content: ", messages.Messages[0].Content)
-		fmt.Println(messages.Messages[0].Content[0].Text.Value)
-		fmt.Println(messages)
+	*/
+	fmt.Println(messages.Messages[0].Content[0].Text.Value)
+	fmt.Println(commentsSlice)
+	//fmt.Println(messages)
 
-		//fmt.Println(commentsSlice)
-
-	}
+	//fmt.Println(commentsSlice)
 
 	return "ur not my dad"
 
