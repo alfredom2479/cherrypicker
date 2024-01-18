@@ -84,6 +84,19 @@ func main() {
 		printUsageMessage()
 		return
 	}
+	if programMode == "grep" {
+		bearerToken := os.Args[2]
+		redditUsername := os.Args[3]
+		searchString := os.Args[4]
+
+		if redditUsername != "" && bearerToken != "" {
+			searchCoemments(client, redditUsername, bearerToken, searchString)
+			return
+		}
+		printUsageMessage()
+		return
+	}
+
 	fmt.Println("Invalid mode.")
 	printUsageMessage()
 	return
@@ -111,6 +124,61 @@ func getBearerToken(c http.Client, cid string, cs string) string {
 
 	fmt.Println(string(body))
 	return string(body)
+}
+
+func searchCoemments(c http.Client, un string, bt string, ss string) {
+	ceb := apiDomain + "/user/" + un + "/comments"
+	ce := ceb
+	var commentResponseData CommentResponseData
+	commentCounter := 0
+	currComment := ""
+	afterId := "init"
+	var matchingCommentsSlice []string
+
+	fmt.Println("search string: ", ss)
+
+	for afterId != "" {
+		if commentCounter > 1500 {
+			break
+		}
+		req, err := http.NewRequest("GET", ce, nil)
+		if err != nil {
+			fmt.Printf("Error making new request: %v", err)
+			return
+		}
+		req.Header.Add("Authorization", "bearer "+bt)
+		req.Header.Add("User-Agent", "ChangeMeClient/0.1 by YourUsername")
+
+		res, err := c.Do(req)
+		if err != nil {
+			fmt.Printf("Error doing request: %v", err)
+			return
+		}
+
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			fmt.Printf("Error reading all of body: %v", err)
+		}
+
+		commentResponseData.Data.After = ""
+		json.Unmarshal([]byte(string(body)), &commentResponseData)
+		afterId = commentResponseData.Data.After
+
+		for _, commentObject := range commentResponseData.Data.Children {
+			commentCounter += 1
+			if strings.Contains(commentObject.Data.Body, ss) {
+
+				currComment = fmt.Sprintf("#%d: '%s' [%s] on r/%s", commentCounter, commentObject.Data.Body, commentObject.Data.CreatedUTC, commentObject.Data.Subreddit)
+				matchingCommentsSlice = append(matchingCommentsSlice, currComment)
+				fmt.Printf("comment #%d (r/%s): %s\n\n", commentCounter, commentObject.Data.Subreddit, commentObject.Data.Body)
+				//time.Parse(commentObject.Data.CreatedUTC)
+			}
+		}
+
+		ce = ceb + "?after=" + commentResponseData.Data.After
+	}
+
+	fmt.Println("Total comments found: ", commentCounter)
 }
 
 func getUserComments(c http.Client, un string, bt string, oaic openai.Client) string {
@@ -314,5 +382,5 @@ func getUserComments(c http.Client, un string, bt string, oaic openai.Client) st
 }
 
 func printUsageMessage() {
-	fmt.Printf("Usage: go run cherrypicker token [clientID] [clientSecret] \nOR\ngo run cherrypicker analyze [bearerToken] [openaitoken] [redditUsername]")
+	fmt.Printf("Usage: go run cherrypicker token [clientID] [clientSecret] \nOR\ngo run cherrypicker analyze [bearerToken] [openaitoken] [redditUsername]\nORgo run cherrypicker grep [bearerToken] [redditusername]\n")
 }
