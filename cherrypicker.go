@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"slices"
 	"strings"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -88,12 +89,25 @@ func main() {
 		bearerToken := os.Args[2]
 		redditUsername := os.Args[3]
 		searchString := os.Args[4]
+		subredditString := os.Args[5]
 
 		if redditUsername != "" && bearerToken != "" {
-			searchCoemments(client, redditUsername, bearerToken, searchString)
+			searchCoemments(client, redditUsername, bearerToken, searchString, subredditString)
 			return
 		}
 		printUsageMessage()
+		return
+	}
+	if programMode == "subs" {
+		bearerToken := os.Args[2]
+		redditUsername := os.Args[3]
+
+		if redditUsername != "" && bearerToken != "" {
+			searchActiveSubs(client, redditUsername, bearerToken)
+			fmt.Println("subs: error with uname or token")
+			return
+		}
+		fmt.Println("subs: u need token and uname")
 		return
 	}
 
@@ -126,7 +140,57 @@ func getBearerToken(c http.Client, cid string, cs string) string {
 	return string(body)
 }
 
-func searchCoemments(c http.Client, un string, bt string, ss string) {
+func searchActiveSubs(c http.Client, un string, bt string) {
+	ceb := apiDomain + "/user/" + un + "/comments"
+	ce := ceb
+	var commentResponseData CommentResponseData
+	commentCounter := 0
+	subredditCount := 0
+	afterId := "init"
+	var subredditsSlice []string
+
+	for afterId != "" {
+		if commentCounter > 1500 {
+			break
+		}
+		req, err := http.NewRequest("GET", ce, nil)
+		if err != nil {
+			fmt.Printf("Error making new request: %v", err)
+			return
+		}
+		req.Header.Add("Authorization", "bearer "+bt)
+		req.Header.Add("User-Agent", "ChangeMeClient/0.1 by YoutUsername")
+
+		res, err := c.Do(req)
+		if err != nil {
+			fmt.Printf("Error doing request: %v", err)
+			return
+		}
+
+		body, err := io.ReadAll(res.Body)
+		if err != nil {
+			fmt.Printf("Error reading all of body: %b", err)
+		}
+
+		commentResponseData.Data.After = ""
+		json.Unmarshal([]byte(string(body)), &commentResponseData)
+		afterId = commentResponseData.Data.After
+
+		for _, commentObject := range commentResponseData.Data.Children {
+
+			commentCounter += 1
+			if !slices.Contains(subredditsSlice, commentObject.Data.Subreddit) {
+				subredditCount += 1
+				fmt.Printf("subreddit #%d: %s\n", subredditCount, commentObject.Data.Subreddit)
+				subredditsSlice = append(subredditsSlice, commentObject.Data.Subreddit)
+			}
+		}
+		ce = ceb + "?after=" + commentResponseData.Data.After
+	}
+	fmt.Println("Total comments found: ", commentCounter)
+}
+
+func searchCoemments(c http.Client, un string, bt string, ss string, sr string) {
 	ceb := apiDomain + "/user/" + un + "/comments"
 	ce := ceb
 	var commentResponseData CommentResponseData
@@ -166,11 +230,14 @@ func searchCoemments(c http.Client, un string, bt string, ss string) {
 
 		for _, commentObject := range commentResponseData.Data.Children {
 			commentCounter += 1
-			if strings.Contains(commentObject.Data.Body, ss) {
+			if ss == " " || strings.Contains(commentObject.Data.Body, ss) {
 
-				currComment = fmt.Sprintf("#%d: '%s' [%s] on r/%s", commentCounter, commentObject.Data.Body, commentObject.Data.CreatedUTC, commentObject.Data.Subreddit)
-				matchingCommentsSlice = append(matchingCommentsSlice, currComment)
-				fmt.Printf("comment #%d (r/%s): %s\n\n", commentCounter, commentObject.Data.Subreddit, commentObject.Data.Body)
+				if sr == "" || sr == commentObject.Data.Subreddit {
+					currComment = fmt.Sprintf("#%d: '%s' [%s] on r/%s", commentCounter, commentObject.Data.Body, commentObject.Data.CreatedUTC, commentObject.Data.Subreddit)
+					matchingCommentsSlice = append(matchingCommentsSlice, currComment)
+					fmt.Printf("comment #%d (r/%s): %s - %s\n", commentCounter, commentObject.Data.Subreddit, commentObject.Data.Body, commentObject.Data.LinkPermalink)
+				}
+
 				//time.Parse(commentObject.Data.CreatedUTC)
 			}
 		}
